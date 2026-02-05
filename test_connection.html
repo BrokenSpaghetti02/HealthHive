@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HealthHive Connection Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2563eb;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f9fafb;
+            border-radius: 5px;
+            border-left: 4px solid #2563eb;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background: #1d4ed8;
+        }
+        .success {
+            color: #059669;
+            font-weight: bold;
+        }
+        .error {
+            color: #dc2626;
+            font-weight: bold;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 200px;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status.online {
+            background: #d1fae5;
+            color: #059669;
+        }
+        .status.offline {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 HealthHive Connection Test</h1>
+        <p class="subtitle">Test your frontend-backend-database connection</p>
+
+        <div class="test-section">
+            <h3>1️⃣ Check Backend Status</h3>
+            <p>Verify that the backend server is running</p>
+            <button onclick="testBackend()">Test Backend Connection</button>
+            <div id="backend-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>2️⃣ Test Authentication</h3>
+            <p>Login to verify JWT authentication</p>
+            <div>
+                <input type="text" id="username" placeholder="Username" value="admin">
+                <input type="password" id="password" placeholder="Password" value="admin123">
+                <button onclick="testLogin()">Login & Get Token</button>
+            </div>
+            <div id="login-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>3️⃣ Fetch Patient Data</h3>
+            <p>Retrieve data from MongoDB via API</p>
+            <button onclick="testPatients()">Get Patients (requires login)</button>
+            <div id="patients-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>4️⃣ Get Analytics</h3>
+            <p>Fetch dashboard analytics</p>
+            <button onclick="testAnalytics()">Get Analytics (requires login)</button>
+            <div id="analytics-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>5️⃣ Create Test Patient</h3>
+            <p>Add a new patient to verify write operations</p>
+            <button onclick="createPatient()">Create Test Patient (requires login)</button>
+            <div id="create-result"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        let accessToken = null;
+
+        function displayResult(elementId, message, isSuccess = true) {
+            const element = document.getElementById(elementId);
+            const className = isSuccess ? 'success' : 'error';
+            element.innerHTML = `<div class="${className}">${message}</div>`;
+        }
+
+        function displayJSON(elementId, data, message = '') {
+            const element = document.getElementById(elementId);
+            element.innerHTML = `
+                <div class="success">${message}</div>
+                <div class="result">${JSON.stringify(data, null, 2)}</div>
+            `;
+        }
+
+        async function testBackend() {
+            try {
+                const response = await fetch(`${API_URL}/`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    displayJSON('backend-result', data, '✅ Backend is online and responding!');
+                } else {
+                    displayResult('backend-result', '❌ Backend returned an error', false);
+                }
+            } catch (error) {
+                displayResult('backend-result', `❌ Backend not reachable: ${error.message}`, false);
+            }
+        }
+
+        async function testLogin() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${API_URL}/api/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    accessToken = data.access_token;
+                    localStorage.setItem('access_token', accessToken);
+                    displayJSON('login-result', {
+                        user: data.user,
+                        token_preview: accessToken.substring(0, 50) + '...',
+                        token_type: data.token_type
+                    }, '✅ Login successful! Token saved.');
+                } else {
+                    displayResult('login-result', `❌ Login failed: ${data.detail}`, false);
+                }
+            } catch (error) {
+                displayResult('login-result', `❌ Error: ${error.message}`, false);
+            }
+        }
+
+        async function testPatients() {
+            if (!accessToken) {
+                accessToken = localStorage.getItem('access_token');
+            }
+
+            if (!accessToken) {
+                displayResult('patients-result', '❌ Please login first!', false);
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/patients?limit=3`, {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    displayJSON('patients-result', {
+                        total_patients: data.total,
+                        sample_patients: data.patients.map(p => ({
+                            id: p.patient_id,
+                            name: `${p.first_name} ${p.last_name}`,
+                            barangay: p.barangay,
+                            conditions: p.conditions
+                        }))
+                    }, `✅ Retrieved ${data.patients.length} of ${data.total} patients from database!`);
+                } else {
+                    displayResult('patients-result', `❌ Error: ${data.detail}`, false);
+                }
+            } catch (error) {
+                displayResult('patients-result', `❌ Error: ${error.message}`, false);
+            }
+        }
+
+        async function testAnalytics() {
+            if (!accessToken) {
+                accessToken = localStorage.getItem('access_token');
+            }
+
+            if (!accessToken) {
+                displayResult('analytics-result', '❌ Please login first!', false);
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/analytics/overview`, {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    displayJSON('analytics-result', data, '✅ Analytics data retrieved from database!');
+                } else {
+                    displayResult('analytics-result', `❌ Error: ${data.detail}`, false);
+                }
+            } catch (error) {
+                displayResult('analytics-result', `❌ Error: ${error.message}`, false);
+            }
+        }
+
+        async function createPatient() {
+            if (!accessToken) {
+                accessToken = localStorage.getItem('access_token');
+            }
+
+            if (!accessToken) {
+                displayResult('create-result', '❌ Please login first!', false);
+                return;
+            }
+
+            const testPatient = {
+                first_name: "Test",
+                last_name: "Patient",
+                date_of_birth: "01/01/1980",
+                age: 46,
+                sex: "Male",
+                barangay: "Poblacion (Pondol)",
+                address: "Test Address, Poblacion",
+                conditions: ["Hypertension"],
+                consent_given: true
+            };
+
+            try {
+                const response = await fetch(`${API_URL}/api/patients`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(testPatient)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    displayJSON('create-result', {
+                        patient_id: data.patient_id,
+                        name: `${data.first_name} ${data.last_name}`,
+                        created_at: data.created_at
+                    }, '✅ Patient created successfully in database!');
+                } else {
+                    displayResult('create-result', `❌ Error: ${JSON.stringify(data.detail || data)}`, false);
+                }
+            } catch (error) {
+                displayResult('create-result', `❌ Error: ${error.message}`, false);
+            }
+        }
+
+        // Auto-test backend on load
+        window.onload = () => {
+            testBackend();
+        };
+    </script>
+</body>
+</html>
