@@ -54,6 +54,7 @@ type Patient = {
   nextFollowUp?: string;
   followUpStatus?: 'due' | 'overdue';
   followUpReason?: string;
+  flaggedForFollowUp?: boolean;
   weight: string;
   height: string;
   bmi: string;
@@ -111,6 +112,37 @@ const medications = [
   'Simvastatin',
   'Atorvastatin'
 ];
+
+const PENDING_VISITS_KEY = 'healthhive_pending_visits';
+
+const loadPendingVisits = (): any[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(PENDING_VISITS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const savePendingVisits = (visits: any[]) => {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(PENDING_VISITS_KEY, JSON.stringify(visits));
+};
+
+const enqueuePendingVisit = (visit: any) => {
+  const visits = loadPendingVisits();
+  visits.push(visit);
+  savePendingVisits(visits);
+  return visits.length;
+};
+
+const clearPendingVisits = () => {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(PENDING_VISITS_KEY);
+};
 
 const mockPatients: Patient[] = [
   {
@@ -1601,7 +1633,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<any>(null);
-  const [pendingSyncCount, setPendingSyncCount] = useState(7);
+  const [pendingSyncCount, setPendingSyncCount] = useState(() => loadPendingVisits().length);
   const [searchHistory, setSearchHistory] = useState<string[]>(['Ana Maria Reyes', 'Carlos Santos']);
   const [isPullingToRefresh, setIsPullingToRefresh] = useState(false);
   const pullStartY = useRef(0);
@@ -1615,13 +1647,12 @@ function App() {
   const [duplicatePatients, setDuplicatePatients] = useState<Patient[]>([]);
   const [vitalWarning, setVitalWarning] = useState<string>('');
   
-  // Mock pending sync data
-  const [pendingSyncData] = useState({
-    newPatients: 3,
-    newVisits: 12,
-    updates: 8,
+  const pendingSyncData = useMemo(() => ({
+    newPatients: 0,
+    newVisits: pendingSyncCount,
+    updates: 0,
     deletions: 0
-  });
+  }), [pendingSyncCount]);
 
   const parseDateValue = (value?: string) => {
     if (!value) return 0;
@@ -1645,6 +1676,11 @@ function App() {
     const nextVisit = patient.next_visit_date || '';
     const nextFollowUp = nextVisit || undefined;
     const followUpStatus = nextFollowUp && parseDateValue(nextFollowUp) < Date.now() ? 'overdue' : nextFollowUp ? 'due' : undefined;
+    const latestRbgValue = patient.latest_rbg ?? patient.latest_glucose;
+    const latestRbsText = latestRbgValue !== undefined && latestRbgValue !== null ? String(latestRbgValue) : '';
+    const currentMeds = Array.isArray(patient.current_medications)
+      ? patient.current_medications.map((med: any) => ({ name: med.name, dosage: med.dosage }))
+      : [];
     return {
       id: patient.patient_id,
       firstName: patient.first_name || '',
@@ -1663,16 +1699,17 @@ function App() {
       maritalStatus: patient.marital_status || '',
       conditions: normalizedConditions,
       latestBP: patient.latest_bp || '',
-      latestRBS: patient.latest_glucose ? String(patient.latest_glucose) : '',
+      latestRBS: latestRbsText,
       riskLevel: riskLevel,
       lastVisit: lastVisit,
       nextFollowUp,
       followUpStatus,
       followUpReason: patient.next_visit_reason || '',
-      weight: patient.weight || '',
-      height: patient.height || '',
-      bmi: patient.bmi || '',
-      currentMedications: patient.medications_dispensed || []
+      flaggedForFollowUp: patient.flagged_for_follow_up,
+      weight: patient.weight ? String(patient.weight) : '',
+      height: patient.height ? String(patient.height) : '',
+      bmi: patient.bmi ? String(patient.bmi) : '',
+      currentMedications: currentMeds
     };
   };
 
@@ -1684,8 +1721,10 @@ function App() {
       const mapped = response.patients.map(mapBackendPatient);
       mapped.sort((a, b) => parseDateValue(b.lastVisit) - parseDateValue(a.lastVisit));
       setPatients(mapped);
+      return mapped;
     } catch (error: any) {
       setPatientsError(error.message || 'Failed to load patients');
+      return [];
     } finally {
       setPatientsLoading(false);
     }
@@ -1828,15 +1867,34 @@ function App() {
     setShowSyncDialog(true);
     setIsLoading(true);
     try {
+      const pendingVisits = loadPendingVisits();
+      let syncedCount = 0;
+      if (pendingVisits.length > 0) {
+        const syncResult = await apiClient.bulkSyncVisits(pendingVisits);
+        const hasErrors = (syncResult?.errors?.length || 0) > 0;
+        const hasConflicts = (syncResult?.conflicts?.length || 0) > 0;
+        if (!hasErrors && !hasConflicts) {
+          syncedCount = syncResult?.success?.length ?? pendingVisits.length;
+          clearPendingVisits();
+          setPendingSyncCount(0);
+        } else {
+          setPendingSyncCount(pendingVisits.length);
+          toast.error('Sync incomplete', {
+            description: 'Some records need review before syncing',
+            icon: <AlertTriangle className="w-4 h-4" />,
+          });
+        }
+      }
       await loadPatients();
       setSyncSuccess(true);
       setLastSyncTime(new Date());
-      setPendingSyncCount(0);
-      const totalRecords = pendingSyncData.newPatients + pendingSyncData.newVisits + pendingSyncData.updates;
+      const totalRecords = syncedCount || pendingSyncData.newPatients + pendingSyncData.newVisits + pendingSyncData.updates;
       toast.success('Sync complete!', {
         description: `${totalRecords} records synced successfully`,
         icon: <CheckCircle2 className="w-4 h-4" />,
       });
+    } catch (error: any) {
+      toast.error(error.message || 'Sync failed');
     } finally {
       setIsLoading(false);
     }
@@ -2036,26 +2094,47 @@ function App() {
     const translations: {[key: string]: {EN: string, CEB: string, TL: string}} = {
       'home': { EN: 'Home', CEB: 'Balay', TL: 'Tahanan' },
       'patients': { EN: 'Patients', CEB: 'Mga Pasyente', TL: 'Mga Pasyente' },
+      'barangays': { EN: 'Barangays', CEB: 'Mga Barangay', TL: 'Mga Barangay' },
+      'scanner': { EN: 'Scanner', CEB: 'Scanner', TL: 'Scanner' },
+      'sync_history': { EN: 'Sync History', CEB: 'Kasaysayan sa Sync', TL: 'Kasaysayan ng Sync' },
+      'user_guide': { EN: 'User Guide', CEB: 'Giya sa Gumagamit', TL: 'Gabay sa Gumagamit' },
+      'admin': { EN: 'Admin', CEB: 'Admin', TL: 'Admin' },
       'high_risk': { EN: 'High Risk', CEB: 'Taas nga Peligro', TL: 'Mataas na Panganib' },
       'follow_up_due': { EN: 'Follow-up Due', CEB: 'Pagbalik nga Appointment', TL: 'Follow-up na Kailangan' },
       'blood_pressure': { EN: 'Blood Pressure', CEB: 'Presyon sa Dugo', TL: 'Presyon ng Dugo' },
       'blood_sugar': { EN: 'Blood Sugar', CEB: 'Asukal sa Dugo', TL: 'Asukal sa Dugo' },
       'save': { EN: 'Save', CEB: 'I-Save', TL: 'I-save' },
       'cancel': { EN: 'Cancel', CEB: 'Kanselar', TL: 'Kanselahin' },
+      'language': { EN: 'Language', CEB: 'Pinulongan', TL: 'Wika' },
+      'healthcare_worker': { EN: 'Healthcare Worker', CEB: 'Trabahante sa Panglawas', TL: 'Health Worker' },
+      'welcome_back': { EN: 'Welcome back to HealthHive!', CEB: 'Maayong pagbalik sa HealthHive!', TL: 'Maligayang pagbabalik sa HealthHive!' },
+      'data_collection_subtitle': { EN: 'Data collection for Jagna community health', CEB: 'Pagkolekta sa datos para sa kahimsog sa komunidad sa Jagna', TL: 'Pagkolekta ng datos para sa kalusugan ng komunidad ng Jagna' },
+      'todays_input': { EN: "Today's Patient Input and Flagging", CEB: 'Mga Input sa Pasyente Karong Adlaw ug Pag-flag', TL: 'Input ng Pasyente Ngayon at Pag-flag' },
+      'log_new_visit': { EN: 'Log New Visit', CEB: 'Irekord ang Bag-ong Bisita', TL: 'Ilog ang Bagong Pagbisita' },
+      'new_patients': { EN: 'new patients', CEB: 'bag-ong pasyente', TL: 'bagong pasyente' },
+      'existing_patients': { EN: 'existing patients', CEB: 'naa nay rekord', TL: 'may rekord na' },
+      'follow_up': { EN: 'Follow Up', CEB: 'Pagbalik', TL: 'Follow-up' },
+      'choose_visit_type': { EN: 'Choose the type of visit to record', CEB: 'Pilia ang klase sa bisita nga irekord', TL: 'Piliin ang uri ng pagbisita na ire-record' },
+      'new_patient': { EN: 'New Patient', CEB: 'Bag-ong Pasyente', TL: 'Bagong Pasyente' },
+      'register_new_patient': { EN: 'Register a new patient', CEB: 'Irehistro ang bag-ong pasyente', TL: 'Irehistro ang bagong pasyente' },
+      'existing_patient': { EN: 'Existing Patient', CEB: 'Naa nay Rekord', TL: 'May Rekord na' },
+      'record_existing_patient': { EN: 'Record visit for existing patient', CEB: 'Irekord ang bisita sa naa nay rekord', TL: 'Irekord ang pagbisita ng may rekord' },
+      'recent_patients': { EN: 'Recent Patients - Quick Actions', CEB: 'Bag-ong Pasyente - Dali nga Aksyon', TL: 'Mga Bagong Pasyente - Mabilisang Aksyon' },
+      'quick_visit_for': { EN: 'Quick Visit for', CEB: 'Dali nga Bisita para sa', TL: 'Mabilisang Pagbisita para kay' }
     };
-    
+
     return translations[key]?.[selectedLanguage] || key;
   };
 
   // Navigation Items for Sidebar
   const navItems = [
-    { id: 'home', label: 'Home', icon: Home },
-    { id: 'patients-list', label: 'Patients', icon: Users },
-    { id: 'barangay-overview', label: 'Barangays', icon: MapPin },
-    { id: 'scanner', label: 'Scanner', icon: ScanLine },
-    { id: 'sync-history', label: 'Sync History', icon: Database },
-    { id: 'user-guide', label: 'User Guide', icon: BookOpen },
-    { id: 'admin', label: 'Admin', icon: Settings },
+    { id: 'home', labelKey: 'home', icon: Home },
+    { id: 'patients-list', labelKey: 'patients', icon: Users },
+    { id: 'barangay-overview', labelKey: 'barangays', icon: MapPin },
+    { id: 'scanner', labelKey: 'scanner', icon: ScanLine },
+    { id: 'sync-history', labelKey: 'sync_history', icon: Database },
+    { id: 'user-guide', labelKey: 'user_guide', icon: BookOpen },
+    { id: 'admin', labelKey: 'admin', icon: Settings },
   ];
 
   return (
@@ -2257,7 +2336,7 @@ function App() {
                       }`}
                     >
                       <Icon className="w-5 h-5" />
-                      <span className="text-sm">{item.label}</span>
+                      <span className="text-sm">{getTranslation(item.labelKey)}</span>
                     </button>
                   );
                 })}
@@ -2267,7 +2346,7 @@ function App() {
               <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-700">
                 <div className="flex items-center gap-2 mb-3">
                   <Globe className="w-4 h-4 text-slate-400" />
-                  <span className="text-slate-300 text-sm">Language</span>
+                  <span className="text-slate-300 text-sm">{getTranslation('language')}</span>
                 </div>
                 <div className="flex gap-2">
                   {(['EN', 'TL', 'CEB'] as const).map((lang) => (
@@ -2435,10 +2514,31 @@ function App() {
             {currentScreen === 'login' && <LoginScreen onLogin={handleLogin} />}
           {currentScreen === 'onboarding1' && <Onboarding1Screen onNext={() => navigate('onboarding2')} />}
           {currentScreen === 'onboarding2' && <Onboarding2Screen onNext={() => navigate('home')} />}
-          {currentScreen === 'home' && <HomeScreen onNavigate={navigate} recentPatients={recentPatients} onSelectPatient={setSelectedPatient} newHighRiskCount={newHighRiskCount} isSyncOverdue={isSyncOverdue()} />}
+          {currentScreen === 'home' && (
+            <HomeScreen
+              onNavigate={navigate}
+              recentPatients={recentPatients}
+              onSelectPatient={setSelectedPatient}
+              newHighRiskCount={newHighRiskCount}
+              isSyncOverdue={isSyncOverdue()}
+              t={getTranslation}
+            />
+          )}
           {currentScreen === 'patients-list' && <PatientsListScreen onNavigate={navigate} onSelectPatient={setSelectedPatient} patients={patients} isLoading={patientsLoading} newHighRiskCount={newHighRiskCount} isSyncOverdue={isSyncOverdue()} />}
           {currentScreen === 'new-patient' && <NewPatientScreen onBack={() => navigate('home')} onNext={() => navigate('initial-screening')} onCreatePatient={handleCreatePatient} />}
-          {currentScreen === 'initial-screening' && <InitialScreeningScreen onBack={() => navigate('new-patient')} onSave={async () => { await loadPatients(); navigate('patient-profile'); }} patientId={newPatientId || activePatient?.id} />}
+          {currentScreen === 'initial-screening' && (
+            <InitialScreeningScreen
+              onBack={() => navigate('new-patient')}
+              onSave={async () => {
+                const updated = await loadPatients();
+                const refreshed = updated.find((p) => p.id === (newPatientId || activePatient?.id));
+                if (refreshed) setSelectedPatient(refreshed);
+                navigate('patient-profile');
+              }}
+              patientId={newPatientId || activePatient?.id}
+              onPendingSyncChange={setPendingSyncCount}
+            />
+          )}
           {currentScreen === 'patient-profile' && (
             activePatient ? (
               <PatientProfileScreen 
@@ -2453,7 +2553,19 @@ function App() {
               <EmptyStateScreen onBack={() => navigate('home')} message="No patients available." />
             )
           )}
-          {currentScreen === 'new-visit' && <NewVisitScreen onBack={() => navigate('home')} onSave={async () => { await loadPatients(); navigate('visit-information'); }} patientId={activePatient?.id} />}
+          {currentScreen === 'new-visit' && (
+            <NewVisitScreen
+              onBack={() => navigate('home')}
+              onSave={async () => {
+                const updated = await loadPatients();
+                const refreshed = updated.find((p) => p.id === activePatient?.id);
+                if (refreshed) setSelectedPatient(refreshed);
+                navigate('visit-information');
+              }}
+              patientId={activePatient?.id}
+              onPendingSyncChange={setPendingSyncCount}
+            />
+          )}
           {currentScreen === 'visit-information' && <VisitInformationScreen onBack={() => navigate('patient-profile')} patientId={activePatient?.id} patientName={activePatient?.name} />}
           {currentScreen === 'high-risk-highlights' && <HighRiskHighlightsScreen onBack={() => navigate('home')} onNavigate={navigate} onSelectPatient={setSelectedPatient} patients={patients} />}
           {currentScreen === 'high-risk-details' && activePatient && <HighRiskDetailsScreen patient={activePatient} onBack={() => navigate('high-risk-highlights')} onNavigate={navigate} />}
@@ -2766,13 +2878,15 @@ function HomeScreen({
   recentPatients, 
   onSelectPatient,
   newHighRiskCount = 0,
-  isSyncOverdue = false
+  isSyncOverdue = false,
+  t
 }: { 
   onNavigate: (screen: Screen) => void; 
   recentPatients: Patient[]; 
   onSelectPatient: (patient: Patient) => void;
   newHighRiskCount?: number;
   isSyncOverdue?: boolean;
+  t: (key: string) => string;
 }) {
   const [showNewVisitDialog, setShowNewVisitDialog] = React.useState(false);
   const [selectedBarangay, setSelectedBarangay] = React.useState('All Barangays');
@@ -2823,18 +2937,18 @@ function HomeScreen({
       <div className="bg-white px-6 py-6 border-b border-slate-200">
         <div className="flex items-start justify-between gap-3 mb-2">
           <div className="flex-1">
-            <h2 className="text-slate-900"><strong>Welcome back to HealthHive!</strong></h2>
+            <h2 className="text-slate-900"><strong>{t('welcome_back')}</strong></h2>
           </div>
           <Badge className="bg-violet-100 text-violet-700 text-xs flex-shrink-0">BHW-03456789</Badge>
         </div>
-        <p className="text-slate-500 text-sm">Data collection for Jagna community health</p>
+        <p className="text-slate-500 text-sm">{t('data_collection_subtitle')}</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 pb-24 space-y-6">
         {/* Today's Patient Input and Flagging */}
         <div>
           <div className="bg-violet-50 rounded-xl p-4 mb-4">
-            <h3 className="text-violet-900 text-sm">Today's Patient Input and Flagging</h3>
+            <h3 className="text-violet-900 text-sm">{t('todays_input')}</h3>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -2849,15 +2963,15 @@ function HomeScreen({
                 </div>
               </div>
               <div className="mb-2">
-                <div className="text-slate-600 text-sm mb-1">Log New Visit</div>
+                <div className="text-slate-600 text-sm mb-1">{t('log_new_visit')}</div>
                 <div className="flex items-baseline gap-4 mt-2">
                   <div>
                     <span className="text-slate-900 text-3xl">12</span>
-                    <span className="text-slate-500 text-xs ml-2">new patients</span>
+                    <span className="text-slate-500 text-xs ml-2">{t('new_patients')}</span>
                   </div>
                   <div>
                     <span className="text-slate-900 text-3xl">45</span>
-                    <span className="text-slate-500 text-xs ml-2">existing patients</span>
+                    <span className="text-slate-500 text-xs ml-2">{t('existing_patients')}</span>
                   </div>
                 </div>
               </div>
@@ -2874,7 +2988,7 @@ function HomeScreen({
                 </div>
               </div>
               <div className="mb-2">
-                <div className="text-slate-600 text-sm mb-1">High Risk</div>
+                <div className="text-slate-600 text-sm mb-1">{t('high_risk')}</div>
                 <div className="text-slate-900 text-3xl mb-1">23</div>
                 <div className="text-slate-500 text-xs">HTN: 11 • DM: 12</div>
               </div>
@@ -2891,7 +3005,7 @@ function HomeScreen({
                 </div>
               </div>
               <div className="mb-2">
-                <div className="text-slate-600 text-sm mb-1">Follow Up</div>
+                <div className="text-slate-600 text-sm mb-1">{t('follow_up')}</div>
                 <div className="text-slate-900 text-3xl mb-1">34</div>
                 <div className="text-slate-500 text-xs">HTN: 16 • DM: 18</div>
               </div>
@@ -2903,9 +3017,9 @@ function HomeScreen({
         <Dialog open={showNewVisitDialog} onOpenChange={setShowNewVisitDialog}>
           <DialogContent className="w-80">
             <DialogHeader>
-              <DialogTitle>Log New Visit</DialogTitle>
+              <DialogTitle>{t('log_new_visit')}</DialogTitle>
               <DialogDescription>
-                Choose the type of visit to record
+                {t('choose_visit_type')}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-4">
@@ -2921,8 +3035,8 @@ function HomeScreen({
                     <Plus className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <div className="text-violet-900">New Patient</div>
-                    <div className="text-violet-700 text-xs">Register a new patient</div>
+                    <div className="text-violet-900">{t('new_patient')}</div>
+                    <div className="text-violet-700 text-xs">{t('register_new_patient')}</div>
                   </div>
                 </div>
               </button>
@@ -2938,8 +3052,8 @@ function HomeScreen({
                     <Activity className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <div className="text-violet-900">Existing Patient</div>
-                    <div className="text-violet-700 text-xs">Record visit for existing patient</div>
+                    <div className="text-violet-900">{t('existing_patient')}</div>
+                    <div className="text-violet-700 text-xs">{t('record_existing_patient')}</div>
                   </div>
                 </div>
               </button>
@@ -2951,7 +3065,7 @@ function HomeScreen({
         {recentPatients && recentPatients.length > 0 && (
           <div>
             <div className="bg-blue-50 rounded-xl p-4 mb-4">
-              <h3 className="text-blue-900 text-sm">Recent Patients - Quick Actions</h3>
+              <h3 className="text-blue-900 text-sm">{t('recent_patients')}</h3>
             </div>
 
             <div className="space-y-2">
@@ -2999,7 +3113,7 @@ function HomeScreen({
                         setShowQuickVisitDialog(true);
                       }}
                       className="w-10 h-10 rounded-lg bg-violet-600 flex items-center justify-center hover:bg-violet-700 transition-colors flex-shrink-0"
-                      title="Log Quick Visit"
+                      title={t('log_new_visit')}
                     >
                       <Plus className="w-5 h-5 text-white" />
                     </button>
@@ -3014,7 +3128,7 @@ function HomeScreen({
         <Dialog open={showQuickVisitDialog} onOpenChange={setShowQuickVisitDialog}>
           <DialogContent className="w-80">
             <DialogHeader>
-              <DialogTitle>Quick Visit for {quickVisitPatient?.name}</DialogTitle>
+              <DialogTitle>{t('quick_visit_for')} {quickVisitPatient?.name}</DialogTitle>
               <DialogDescription>
                 Record a quick visit for this patient
               </DialogDescription>
@@ -3676,7 +3790,17 @@ function NewPatientScreen({
 }
 
 // Initial Screening Screen
-function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => void; onSave: () => void; patientId?: string }) {
+function InitialScreeningScreen({
+  onBack,
+  onSave,
+  patientId,
+  onPendingSyncChange
+}: {
+  onBack: () => void;
+  onSave: () => void;
+  patientId?: string;
+  onPendingSyncChange?: (count: number) => void;
+}) {
   const [medicationList, setMedicationList] = React.useState<Array<{ name: string; dosage: string }>>([
     { name: '', dosage: '' }
   ]);
@@ -3684,8 +3808,13 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
   const [height, setHeight] = React.useState('');
   const [systolic, setSystolic] = React.useState('');
   const [diastolic, setDiastolic] = React.useState('');
-  const [glucose, setGlucose] = React.useState('');
-  const [glucoseType, setGlucoseType] = React.useState<'Random' | 'Fasting'>('Random');
+  const [randomGlucose, setRandomGlucose] = React.useState('');
+  const [fastingGlucose, setFastingGlucose] = React.useState('');
+  const [medicationsProvided, setMedicationsProvided] = React.useState<'Y' | 'N' | null>(null);
+  const [medicationsTakenRegularly, setMedicationsTakenRegularly] = React.useState<'Y' | 'N' | null>(null);
+  const [previousMedications, setPreviousMedications] = React.useState('');
+  const [hasHTN, setHasHTN] = React.useState(false);
+  const [hasDM, setHasDM] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
 
   const addMedication = () => {
@@ -3696,17 +3825,21 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
     setMedicationList(medicationList.filter((_, i) => i !== index));
   };
 
-  const [previousMedicationList, setPreviousMedicationList] = React.useState<Array<{ name: string; dosage: string }>>([
-    { name: '', dosage: '' }
-  ]);
-
-  const addPreviousMedication = () => {
-    setPreviousMedicationList([...previousMedicationList, { name: '', dosage: '' }]);
-  };
-
-  const removePreviousMedication = (index: number) => {
-    setPreviousMedicationList(previousMedicationList.filter((_, i) => i !== index));
-  };
+  const parsedWeight = Number(weight);
+  const parsedHeight = Number(height);
+  const bmiValue = parsedWeight > 0 && parsedHeight > 0 ? parsedWeight / ((parsedHeight / 100) ** 2) : null;
+  const bmiRounded = bmiValue ? Math.round(bmiValue * 10) / 10 : null;
+  const bmiLabel = bmiRounded === null
+    ? ''
+    : bmiRounded < 18.5
+      ? 'Underweight'
+      : bmiRounded < 23
+        ? 'Normal'
+        : bmiRounded < 25
+          ? 'Overweight'
+          : bmiRounded < 30
+            ? 'Obese I'
+            : 'Obese II';
 
   const handleSave = async () => {
     if (!patientId) {
@@ -3714,26 +3847,74 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
       return;
     }
     setIsSaving(true);
+    let visitPayload: any;
     try {
-      const meds = medicationList
+      const currentMeds = medicationList
         .filter((m) => m.name && m.dosage)
         .map((m) => ({ name: m.name, dosage: m.dosage, quantity: 30, instructions: 'Take as prescribed' }));
-      await apiClient.recordVisit({
+      const parsedSystolic = systolic ? Number(systolic) : undefined;
+      const parsedDiastolic = diastolic ? Number(diastolic) : undefined;
+      const parsedRandomGlucose = randomGlucose ? Number(randomGlucose) : undefined;
+      const parsedFastingGlucose = fastingGlucose ? Number(fastingGlucose) : undefined;
+      const shouldFlag = (parsedSystolic !== undefined && parsedDiastolic !== undefined && parsedSystolic >= 140 && parsedDiastolic >= 90)
+        || (parsedRandomGlucose !== undefined && parsedRandomGlucose >= 200)
+        || (parsedFastingGlucose !== undefined && parsedFastingGlucose >= 126)
+        || (bmiRounded !== null && bmiRounded >= 30);
+      visitPayload = {
         patient_id: patientId,
         visit_type: 'screening',
         vitals: {
           weight: weight ? Number(weight) : undefined,
           height: height ? Number(height) : undefined,
-          systolic: systolic ? Number(systolic) : undefined,
-          diastolic: diastolic ? Number(diastolic) : undefined,
-          glucose: glucose ? Number(glucose) : undefined,
-          glucose_type: glucose ? glucoseType : undefined
+          bmi: bmiRounded !== null ? bmiRounded : undefined,
+          systolic: parsedSystolic,
+          diastolic: parsedDiastolic,
+          glucose_random: parsedRandomGlucose,
+          glucose_fasting: parsedFastingGlucose
         },
-        medications_dispensed: meds
-      });
+        current_medications: currentMeds,
+        medications_provided: medicationsProvided === 'Y' ? true : medicationsProvided === 'N' ? false : undefined,
+        medications_taken_regularly: medicationsTakenRegularly === 'Y' ? true : medicationsTakenRegularly === 'N' ? false : undefined,
+        previous_medications: previousMedications || undefined,
+        flagged_for_follow_up: shouldFlag
+      };
+      let conditions: string[] = [];
+      if (hasHTN) conditions.push('HTN');
+      if (hasDM) conditions.push('DM');
+      if (conditions.length === 0) {
+        if (parsedSystolic !== undefined && parsedDiastolic !== undefined && parsedSystolic >= 140 && parsedDiastolic >= 90) {
+          conditions.push('HTN');
+        }
+        if (parsedRandomGlucose !== undefined && parsedRandomGlucose >= 200) {
+          conditions.push('DM');
+        }
+        if (parsedFastingGlucose !== undefined && parsedFastingGlucose >= 126) {
+          conditions.push('DM');
+        }
+      }
+      if (conditions.length > 0) {
+        await apiClient.updatePatient(patientId, { conditions });
+      }
+      await apiClient.recordVisit(visitPayload);
       toast.success('Screening saved');
       onSave();
     } catch (error: any) {
+      const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+      const isNetworkError = (error?.message || '').toLowerCase().includes('failed to fetch');
+      if (isOffline || isNetworkError) {
+        const count = enqueuePendingVisit({
+          ...visitPayload,
+          sync_status: 'pending',
+          created_at: new Date().toISOString()
+        });
+        onPendingSyncChange?.(count);
+        toast.success('Screening saved locally', {
+          description: 'Will sync when back online',
+          icon: <WifiOff className="w-4 h-4" />
+        });
+        onSave();
+        return;
+      }
       toast.error(error.message || 'Failed to save screening');
     } finally {
       setIsSaving(false);
@@ -3777,7 +3958,9 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
             <div className="p-4 bg-violet-50 rounded-xl border border-violet-200 mt-3">
               <div className="flex justify-between items-center">
                 <span className="text-slate-700 text-sm">BMI:</span>
-                <span className="text-violet-900">23.9 (Normal)</span>
+              <span className="text-violet-900">
+                {bmiRounded !== null ? `${bmiRounded} (${bmiLabel})` : '—'}
+              </span>
               </div>
             </div>
           </div>
@@ -3788,11 +3971,25 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
             <div className="space-y-3">
               <div>
                 <Label className="text-slate-700 mb-2 block text-xs">Random Blood Sugar (mg/dL)</Label>
-                <Input type="text" inputMode="numeric" pattern="[0-9]*" className="h-11 bg-white border-slate-200" />
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  className="h-11 bg-white border-slate-200"
+                  value={randomGlucose}
+                  onChange={(e) => setRandomGlucose(e.target.value)}
+                />
               </div>
               <div>
                 <Label className="text-slate-700 mb-2 block text-xs">Fasting Blood Sugar (mg/dL)</Label>
-                <Input type="text" inputMode="numeric" pattern="[0-9]*" className="h-11 bg-white border-slate-200" />
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  className="h-11 bg-white border-slate-200"
+                  value={fastingGlucose}
+                  onChange={(e) => setFastingGlucose(e.target.value)}
+                />
               </div>
             </div>
           </div>
@@ -3817,7 +4014,14 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
                 <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
                   <div>
                     <Label className="text-slate-700 mb-1 block text-xs">Medication</Label>
-                    <Select>
+                    <Select
+                      value={med.name}
+                      onValueChange={(value) => {
+                        setMedicationList((prev) =>
+                          prev.map((item, i) => (i === index ? { ...item, name: value } : item))
+                        );
+                      }}
+                    >
                       <SelectTrigger className="h-11 bg-white border-slate-200">
                         <SelectValue placeholder="Select" />
                       </SelectTrigger>
@@ -3832,7 +4036,14 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
                     <Label className="text-slate-700 mb-1 block text-xs">Dosage</Label>
                     <Input 
                       placeholder="e.g. 500mg 2x daily" 
-                      className="h-11 bg-white border-slate-200" 
+                      className="h-11 bg-white border-slate-200"
+                      value={med.dosage}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setMedicationList((prev) =>
+                          prev.map((item, i) => (i === index ? { ...item, dosage: value } : item))
+                        );
+                      }}
                     />
                   </div>
                   {medicationList.length > 1 && (
@@ -3849,55 +4060,61 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
             </div>
           </div>
 
-          {/* Previous Medications */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-slate-900 text-sm"><strong>Previous Medications</strong></h3>
-              <Button
-                type="button"
-                onClick={addPreviousMedication}
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-              >
-                <Plus className="w-3 h-3 mr-1" />
-                Add
-              </Button>
+          {/* Medication Status */}
+          <div className="space-y-4">
+            <div>
+              <Label className="text-slate-700 mb-2 block text-sm">Any medications provided?</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={medicationsProvided === 'Y' ? 'default' : 'outline'}
+                  onClick={() => setMedicationsProvided('Y')}
+                  className={`h-11 ${medicationsProvided === 'Y' ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                >
+                  Yes
+                </Button>
+                <Button
+                  type="button"
+                  variant={medicationsProvided === 'N' ? 'default' : 'outline'}
+                  onClick={() => setMedicationsProvided('N')}
+                  className={`h-11 ${medicationsProvided === 'N' ? 'bg-red-600 hover:bg-red-700' : ''}`}
+                >
+                  No
+                </Button>
+              </div>
             </div>
-            <div className="space-y-3">
-              {previousMedicationList.map((med, index) => (
-                <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-                  <div>
-                    <Label className="text-slate-700 mb-1 block text-xs">Medication</Label>
-                    <Select>
-                      <SelectTrigger className="h-11 bg-white border-slate-200">
-                        <SelectValue placeholder="Select" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {medications.map((medication) => (
-                          <SelectItem key={medication} value={medication}>{medication}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label className="text-slate-700 mb-1 block text-xs">Dosage</Label>
-                    <Input 
-                      placeholder="e.g. 500mg 2x daily" 
-                      className="h-11 bg-white border-slate-200" 
-                    />
-                  </div>
-                  {previousMedicationList.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => removePreviousMedication(index)}
-                      className="mt-6 text-red-600 hover:text-red-700"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-                  )}
-                </div>
-              ))}
+
+            <div>
+              <Label className="text-slate-700 mb-2 block text-sm">Previous medications</Label>
+              <Textarea
+                placeholder="List previous medications..."
+                className="bg-white border-slate-200"
+                rows={3}
+                value={previousMedications}
+                onChange={(e) => setPreviousMedications(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-700 mb-2 block text-sm">Are medications taken regularly?</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={medicationsTakenRegularly === 'Y' ? 'default' : 'outline'}
+                  onClick={() => setMedicationsTakenRegularly('Y')}
+                  className={`h-11 ${medicationsTakenRegularly === 'Y' ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                >
+                  Yes
+                </Button>
+                <Button
+                  type="button"
+                  variant={medicationsTakenRegularly === 'N' ? 'default' : 'outline'}
+                  onClick={() => setMedicationsTakenRegularly('N')}
+                  className={`h-11 ${medicationsTakenRegularly === 'N' ? 'bg-red-600 hover:bg-red-700' : ''}`}
+                >
+                  No
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -3916,11 +4133,19 @@ function InitialScreeningScreen({ onBack, onSave, patientId }: { onBack: () => v
             <h3 className="text-slate-900 mb-3 text-sm"><strong>Diagnosed Conditions</strong></h3>
             <div className="space-y-2">
               <div className="flex items-center gap-2">
-                <Checkbox id="htn" />
+                <Checkbox
+                  id="htn"
+                  checked={hasHTN}
+                  onCheckedChange={(checked) => setHasHTN(Boolean(checked))}
+                />
                 <Label htmlFor="htn" className="text-slate-700 text-sm">Hypertension</Label>
               </div>
               <div className="flex items-center gap-2">
-                <Checkbox id="dm" />
+                <Checkbox
+                  id="dm"
+                  checked={hasDM}
+                  onCheckedChange={(checked) => setHasDM(Boolean(checked))}
+                />
                 <Label htmlFor="dm" className="text-slate-700 text-sm">Diabetes Mellitus</Label>
               </div>
             </div>
@@ -3979,9 +4204,11 @@ function VisitInformationScreen({ onBack, patientId, patientName }: { onBack: ()
         if (latest) {
           const visitDate = latest.visit_date ? new Date(latest.visit_date).toISOString().slice(0, 10) : '';
           const recordedDate = latest.created_at ? new Date(latest.created_at).toLocaleString() : '';
-          const newMeds = Array.isArray(latest.medications_dispensed)
-            ? latest.medications_dispensed.map((m: any) => `${m.name} ${m.dosage}`).join(', ')
-            : '';
+          const newMeds = latest.new_medication_prescribed
+            ? String(latest.new_medication_prescribed)
+            : Array.isArray(latest.medications_dispensed)
+              ? latest.medications_dispensed.map((m: any) => `${m.name} ${m.dosage}`).join(', ')
+              : '';
           setEditedData((prev) => ({
             ...prev,
             visitId: latest.visit_id || latest._id || prev.visitId,
@@ -3992,7 +4219,7 @@ function VisitInformationScreen({ onBack, patientId, patientName }: { onBack: ()
             systolicBp: latest.vitals?.systolic ? String(latest.vitals.systolic) : '',
             diastolicBp: latest.vitals?.diastolic ? String(latest.vitals.diastolic) : '',
             bloodSugar: latest.vitals?.glucose ? String(latest.vitals.glucose) : '',
-            medicationTaken: latest.medication_taken ? 'Yes' : 'No',
+            medicationTaken: latest.medications_taken_regularly === undefined ? 'Unknown' : latest.medications_taken_regularly ? 'Yes' : 'No',
             complications: latest.complications || [],
             newMedications: newMeds,
             visitNotes: latest.clinical_notes || latest.notes || '',
@@ -4748,15 +4975,28 @@ function PatientProfileScreen({
 }
 
 // New Visit Screen
-function NewVisitScreen({ onBack, onSave, patientId }: { onBack: () => void; onSave: () => void; patientId?: string }) {
-  const [medicationTaken, setMedicationTaken] = React.useState<'Y' | 'N' | null>(null);
+function NewVisitScreen({
+  onBack,
+  onSave,
+  patientId,
+  onPendingSyncChange
+}: {
+  onBack: () => void;
+  onSave: () => void;
+  patientId?: string;
+  onPendingSyncChange?: (count: number) => void;
+}) {
+  const [medicationsProvided, setMedicationsProvided] = React.useState<'Y' | 'N' | null>(null);
+  const [medicationsTakenRegularly, setMedicationsTakenRegularly] = React.useState<'Y' | 'N' | null>(null);
+  const [treatment, setTreatment] = React.useState('');
+  const [newMedicationPrescribed, setNewMedicationPrescribed] = React.useState('');
   const [showComplicationDialog, setShowComplicationDialog] = React.useState(false);
   const [otherComplication, setOtherComplication] = React.useState('');
   const [patientIdInput, setPatientIdInput] = React.useState(patientId || '');
   const [systolic, setSystolic] = React.useState('');
   const [diastolic, setDiastolic] = React.useState('');
-  const [glucose, setGlucose] = React.useState('');
-  const [glucoseType, setGlucoseType] = React.useState<'Random' | 'Fasting'>('Random');
+  const [randomGlucose, setRandomGlucose] = React.useState('');
+  const [fastingGlucose, setFastingGlucose] = React.useState('');
   const [isSaving, setIsSaving] = React.useState(false);
 
   React.useEffect(() => {
@@ -4771,20 +5011,50 @@ function NewVisitScreen({ onBack, onSave, patientId }: { onBack: () => void; onS
       return;
     }
     setIsSaving(true);
+    let visitPayload: any;
     try {
-      await apiClient.recordVisit({
+      const parsedSystolic = systolic ? Number(systolic) : undefined;
+      const parsedDiastolic = diastolic ? Number(diastolic) : undefined;
+      const parsedRandomGlucose = randomGlucose ? Number(randomGlucose) : undefined;
+      const parsedFastingGlucose = fastingGlucose ? Number(fastingGlucose) : undefined;
+      const shouldFlag = (parsedSystolic !== undefined && parsedDiastolic !== undefined && parsedSystolic >= 140 && parsedDiastolic >= 90)
+        || (parsedRandomGlucose !== undefined && parsedRandomGlucose >= 200)
+        || (parsedFastingGlucose !== undefined && parsedFastingGlucose >= 126);
+      visitPayload = {
         patient_id: patientIdInput,
         visit_type: 'follow-up',
         vitals: {
-          systolic: systolic ? Number(systolic) : undefined,
-          diastolic: diastolic ? Number(diastolic) : undefined,
-          glucose: glucose ? Number(glucose) : undefined,
-          glucose_type: glucose ? glucoseType : undefined
-        }
-      });
+          systolic: parsedSystolic,
+          diastolic: parsedDiastolic,
+          glucose_random: parsedRandomGlucose,
+          glucose_fasting: parsedFastingGlucose
+        },
+        medications_provided: medicationsProvided === 'Y' ? true : medicationsProvided === 'N' ? false : undefined,
+        medications_taken_regularly: medicationsTakenRegularly === 'Y' ? true : medicationsTakenRegularly === 'N' ? false : undefined,
+        new_medication_prescribed: newMedicationPrescribed || undefined,
+        treatment: treatment || undefined,
+        flagged_for_follow_up: shouldFlag
+      };
+      await apiClient.recordVisit(visitPayload);
       toast.success('Visit saved');
       onSave();
     } catch (error: any) {
+      const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+      const isNetworkError = (error?.message || '').toLowerCase().includes('failed to fetch');
+      if (isOffline || isNetworkError) {
+        const count = enqueuePendingVisit({
+          ...visitPayload,
+          sync_status: 'pending',
+          created_at: new Date().toISOString()
+        });
+        onPendingSyncChange?.(count);
+        toast.success('Visit saved locally', {
+          description: 'Will sync when back online',
+          icon: <WifiOff className="w-4 h-4" />
+        });
+        onSave();
+        return;
+      }
       toast.error(error.message || 'Failed to save visit');
     } finally {
       setIsSaving(false);
@@ -4861,34 +5131,78 @@ function NewVisitScreen({ onBack, onSave, patientId }: { onBack: () => void; onS
             </div>
           </div>
 
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-slate-700 mb-2 block text-xs">Random Blood Sugar (mg/dL)</Label>
+              <Input type="number" className="h-11 bg-white border-slate-200" value={randomGlucose} onChange={(e) => setRandomGlucose(e.target.value)} />
+            </div>
+            <div>
+              <Label className="text-slate-700 mb-2 block text-xs">Fasting Blood Sugar (mg/dL)</Label>
+              <Input type="number" className="h-11 bg-white border-slate-200" value={fastingGlucose} onChange={(e) => setFastingGlucose(e.target.value)} />
+            </div>
+          </div>
+
           {/* Treatment & Adherence Section */}
           <div>
             <h3 className="text-slate-900 mb-3 text-sm">Treatment & Adherence</h3>
             
             <div className="space-y-4">
               <div>
-                <Label className="text-slate-700 mb-2 block text-sm">Medication Taken as Prescribed?</Label>
+                <Label className="text-slate-700 mb-2 block text-sm">Treatment</Label>
+                <Textarea
+                  placeholder="Enter treatment given..."
+                  className="bg-white border-slate-200"
+                  rows={2}
+                  value={treatment}
+                  onChange={(e) => setTreatment(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <Label className="text-slate-700 mb-2 block text-sm">Any meds provided?</Label>
                 <div className="grid grid-cols-2 gap-2">
                   <Button
                     type="button"
-                    variant={medicationTaken === 'Y' ? 'default' : 'outline'}
-                    onClick={() => setMedicationTaken('Y')}
-                    className={`h-11 ${medicationTaken === 'Y' ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                    variant={medicationsProvided === 'Y' ? 'default' : 'outline'}
+                    onClick={() => setMedicationsProvided('Y')}
+                    className={`h-11 ${medicationsProvided === 'Y' ? 'bg-green-600 hover:bg-green-700' : ''}`}
                   >
                     Yes
                   </Button>
                   <Button
                     type="button"
-                    variant={medicationTaken === 'N' ? 'default' : 'outline'}
-                    onClick={() => setMedicationTaken('N')}
-                    className={`h-11 ${medicationTaken === 'N' ? 'bg-red-600 hover:bg-red-700' : ''}`}
+                    variant={medicationsProvided === 'N' ? 'default' : 'outline'}
+                    onClick={() => setMedicationsProvided('N')}
+                    className={`h-11 ${medicationsProvided === 'N' ? 'bg-red-600 hover:bg-red-700' : ''}`}
                   >
                     No
                   </Button>
                 </div>
               </div>
 
-              {medicationTaken === 'N' && (
+              <div>
+                <Label className="text-slate-700 mb-2 block text-sm">Are medications taken regularly?</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    variant={medicationsTakenRegularly === 'Y' ? 'default' : 'outline'}
+                    onClick={() => setMedicationsTakenRegularly('Y')}
+                    className={`h-11 ${medicationsTakenRegularly === 'Y' ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                  >
+                    Yes
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={medicationsTakenRegularly === 'N' ? 'default' : 'outline'}
+                    onClick={() => setMedicationsTakenRegularly('N')}
+                    className={`h-11 ${medicationsTakenRegularly === 'N' ? 'bg-red-600 hover:bg-red-700' : ''}`}
+                  >
+                    No
+                  </Button>
+                </div>
+              </div>
+
+              {medicationsTakenRegularly === 'N' && (
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
                   <h4 className="text-amber-900 mb-3 text-sm">Medication Adherence Barriers</h4>
                   <div className="space-y-3">
@@ -4925,6 +5239,8 @@ function NewVisitScreen({ onBack, onSave, patientId }: { onBack: () => void; onS
                   placeholder="Enter new medications and dosage..."
                   className="bg-white border-slate-200" 
                   rows={3} 
+                  value={newMedicationPrescribed}
+                  onChange={(e) => setNewMedicationPrescribed(e.target.value)}
                 />
               </div>
 
@@ -5327,7 +5643,7 @@ function FlaggedPatientsScreen({
 
   // Filter patients who are either high/very high risk or have follow-ups
   const flaggedPatients = patients.filter(p =>
-    p.riskLevel === 'High' || p.riskLevel === 'Very High' || p.nextFollowUp
+    p.riskLevel === 'High' || p.riskLevel === 'Very High' || p.nextFollowUp || p.flaggedForFollowUp
   );
 
   const filteredPatients = flaggedPatients.filter(patient => {
