@@ -51,6 +51,7 @@ export function RegistryPage() {
         const normalizeRisk = (risk?: string) => (risk === 'Elevated' ? 'Medium' : risk);
         // Map backend data to frontend Patient type
         const mappedPatients = response.patients.map((p: any) => ({
+          ...p,
           id: p.patient_id,
           name: p.name || `${p.first_name} ${p.last_name}`,
           sex: normalizeSex(p.sex),
@@ -62,8 +63,17 @@ export function RegistryPage() {
           risk: normalizeRisk(p.risk_level) || 'Low',
           controlStatus: p.control_status || 'Unknown',
           contact: p.contact,
-          flaggedForFollowUp: ['High', 'Very High'].includes(p.risk_level),
-          ...p
+          latestRBG: p.latest_rbg ?? p.latest_glucose,
+          latestFBG: p.latest_fbg,
+          latestBMI: p.bmi ?? p.latest_bmi,
+          height: p.height,
+          weight: p.weight,
+          medications: Array.isArray(p.current_medications)
+            ? p.current_medications.map((med: any) => `${med.name} ${med.dosage}`.trim())
+            : undefined,
+          flaggedForFollowUp: typeof p.flagged_for_follow_up === 'boolean'
+            ? p.flagged_for_follow_up
+            : ['High', 'Very High'].includes(p.risk_level)
         }));
         if (isActive) {
           setPatients(mappedPatients);
@@ -118,7 +128,7 @@ export function RegistryPage() {
   };
 
   const riskOrder = { 'Normal': 0, 'Low': 1, 'Medium': 2, 'High': 3, 'Very High': 4 };
-  const controlOrder = { 'N/A': 0, 'Controlled': 1, 'Unknown': 2, 'Uncontrolled': 3 };
+  const controlOrder = { 'N/A': 0, 'Controlled': 1, 'Unassigned': 2, 'Unknown': 3, 'Uncontrolled': 4 };
   const formatDate = (value: string) => {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) {
@@ -166,6 +176,7 @@ export function RegistryPage() {
 
   const getControlColor = (status: string) => {
     if (status === 'N/A') return 'outline';
+    if (status === 'Unassigned') return 'secondary';
     return status === 'Controlled' ? 'default' : 'destructive';
   };
 

@@ -1,5 +1,5 @@
 import { KPICard } from "../KPICard";
-import { Users, Activity, Heart, TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, Calendar, Database, MapPin, Flag } from "lucide-react";
+import { Users, Activity, Heart, TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, Calendar, Database, MapPin, Flag, Printer } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { api } from "../../../lib/api";
@@ -147,12 +147,41 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
     .filter((a: any) => a.category !== "Good Adherence")
     .reduce((sum: number, a: any) => sum + (a.count || 0), 0);
 
+  const handlePrint = () => {
+    window.print();
+  };
+
   return (
-    <div className="py-4 space-y-4">
-      <div>
-        <h2 className="text-slate-900 mb-0.5">Overview Dashboard</h2>
-        <p className="text-slate-600 text-xs">Real-time monitoring of chronic disease management in Jagna (33 Barangays)</p>
+    <div className="py-4 space-y-4 overview-print-root">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-slate-900 mb-0.5">Overview Dashboard</h2>
+          <p className="text-slate-600 text-xs">Real-time monitoring of chronic disease management in Jagna (33 Barangays)</p>
+        </div>
+        <button
+          onClick={handlePrint}
+          className="h-7 text-xs gap-1.5 border border-[#D4DBDE] rounded-md px-3 flex items-center no-print"
+        >
+          <Printer size={12} />
+          Print PDF
+        </button>
       </div>
+
+      <style>{`
+        @media print {
+          .no-print { display: none !important; }
+          .overview-print-root { background: #fff !important; }
+          .overview-print-root .recharts-wrapper,
+          .overview-print-root .recharts-surface,
+          .overview-print-root .border,
+          .overview-print-root .rounded-md,
+          .overview-print-root .rounded-xl,
+          .overview-print-root .card { break-inside: avoid; }
+          .overview-print-root .shadow,
+          .overview-print-root .shadow-md,
+          .overview-print-root .hover\\:shadow-md { box-shadow: none !important; }
+        }
+      `}</style>
 
       {/* Patient Population Overview */}
       <div className="bg-[#F3F0FF] border border-[#D4DBDE] rounded-md p-3">

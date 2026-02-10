@@ -8,7 +8,7 @@ export interface Patient {
   lastVisit: string;
   nextDue: string;
   risk: 'Low' | 'Medium' | 'High' | 'Very High' | 'Normal';
-  controlStatus: 'Controlled' | 'Uncontrolled' | 'Unknown' | 'N/A';
+  controlStatus: 'Controlled' | 'Uncontrolled' | 'Unassigned' | 'Unknown' | 'N/A';
   flaggedForFollowUp?: boolean;
   followUpReason?: string;
   contact?: string;

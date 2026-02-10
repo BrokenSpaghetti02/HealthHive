@@ -16,7 +16,7 @@ import {
 import { api } from "../../../lib/api";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
-import { Download, Filter, Calendar } from "lucide-react";
+import { Download, Filter, Calendar, Printer } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { useEffect, useState } from "react";
 
@@ -102,21 +102,48 @@ export function AnalyticsPage() {
     ? (retention12.reduce((sum: number, c: any) => sum + (c.month12 / c.enrolled) * 100, 0) / retention12.length)
     : 0;
 
+  const handlePrint = () => {
+    window.print();
+  };
+
   return (
-    <div className="py-4 space-y-4">
-      <div>
-        <h2 className="text-slate-900 mb-0.5">Chronic Disease Analytics</h2>
-        <p className="text-slate-600 text-xs">Comprehensive monitoring and analysis of hypertension and diabetes programs across 33 barangays, tracking patient control rates, treatment adherence, risk stratification, and geographic patterns to guide targeted interventions.</p>
+    <div className="py-4 space-y-4 analytics-print-root">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-slate-900 mb-0.5">Chronic Disease Analytics</h2>
+          <p className="text-slate-600 text-xs">Comprehensive monitoring and analysis of hypertension and diabetes programs across 33 barangays, tracking patient control rates, treatment adherence, risk stratification, and geographic patterns to guide targeted interventions.</p>
+        </div>
+        <Button onClick={handlePrint} size="sm" variant="outline" className="h-7 text-xs gap-1.5 no-print">
+          <Printer size={12} />
+          Print PDF
+        </Button>
       </div>
 
+      <style>{`
+        @media print {
+          .no-print { display: none !important; }
+          .analytics-print-root [data-state="inactive"] { display: none !important; }
+          .analytics-print-root { background: #fff !important; }
+          .analytics-print-root .recharts-wrapper,
+          .analytics-print-root .recharts-surface,
+          .analytics-print-root .border,
+          .analytics-print-root .rounded-md,
+          .analytics-print-root .rounded-xl,
+          .analytics-print-root .card { break-inside: avoid; }
+          .analytics-print-root .shadow,
+          .analytics-print-root .shadow-md,
+          .analytics-print-root .hover\\:shadow-md { box-shadow: none !important; }
+        }
+      `}</style>
+
       <Tabs defaultValue="hypertension" className="space-y-3">
-        <TabsList className="h-7">
+        <TabsList className="h-7 no-print">
           <TabsTrigger value="hypertension" className="text-xs px-3">Hypertension</TabsTrigger>
           <TabsTrigger value="diabetes" className="text-xs px-3">Diabetes Mellitus</TabsTrigger>
           <TabsTrigger value="cohorts" className="text-xs px-3">Cohort Analysis</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="hypertension" className="space-y-4">
+        <TabsContent value="hypertension" className="space-y-4 print-section">
           <div className="bg-[#FFF4ED] border border-[#D4DBDE] rounded-md p-3">
             <h3 className="text-[#CD5E31] mb-1 text-xs">Hypertension Program Overview</h3>
             <p className="text-[10px] text-[#1E1E1E]">
@@ -329,7 +356,7 @@ export function AnalyticsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="diabetes" className="space-y-4">
+        <TabsContent value="diabetes" className="space-y-4 print-section">
           <div className="bg-[#EAF0F6] border border-[#D4DBDE] rounded-md p-3">
             <h3 className="text-[#274492] mb-1 text-xs">Diabetes Mellitus Program Overview</h3>
             <p className="text-[10px] text-[#1E1E1E]">
@@ -563,7 +590,7 @@ export function AnalyticsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="cohorts" className="space-y-4">
+        <TabsContent value="cohorts" className="space-y-4 print-section">
           {/* Full-width header card */}
           <div className="bg-[#F3F0FF] border border-[#D4DBDE] rounded-md p-3">
             <h3 className="text-[#7C3AED] mb-1 text-xs">Cohort & Demographics Analysis</h3>
@@ -573,7 +600,7 @@ export function AnalyticsPage() {
           </div>
 
           {/* Filters and actions */}
-          <div className="flex gap-2 items-center justify-end">
+          <div className="flex gap-2 items-center justify-end no-print">
             <Select value={cohortView} onValueChange={setCohortView}>
               <SelectTrigger className="w-[140px] h-7 text-xs border-[#D4DBDE]">
                 <Filter size={12} className="mr-1" />
