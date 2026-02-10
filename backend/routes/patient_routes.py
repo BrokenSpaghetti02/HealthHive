@@ -108,6 +108,11 @@ async def register_patient(
         "marital_status": patient_data.get("marital_status"),
         "conditions": patient_data.get("conditions", []),
         "risk_level": patient_data.get("risk_level"),
+        "current_medications": patient_data.get("current_medications", []),
+        "previous_medications": patient_data.get("previous_medications"),
+        "medications_provided": patient_data.get("medications_provided"),
+        "medications_taken_regularly": patient_data.get("medications_taken_regularly"),
+        "flagged_for_follow_up": patient_data.get("flagged_for_follow_up"),
         "consent_records": [],
         "created_at": now,
         "created_by": current_user["user_id"],
@@ -259,6 +264,22 @@ async def list_patients(
             patient["latest_bp"] = f"{vitals.get('systolic')}/{vitals.get('diastolic')}"
         if vitals.get("glucose"):
             patient["latest_glucose"] = vitals.get("glucose")
+        if vitals.get("glucose_random") is not None:
+            patient["latest_rbg"] = vitals.get("glucose_random")
+        elif vitals.get("glucose") is not None and (vitals.get("glucose_type") or "").lower() == "random":
+            patient["latest_rbg"] = vitals.get("glucose")
+        if vitals.get("glucose_fasting") is not None:
+            patient["latest_fbg"] = vitals.get("glucose_fasting")
+        elif vitals.get("glucose") is not None and (vitals.get("glucose_type") or "").lower() == "fasting":
+            patient["latest_fbg"] = vitals.get("glucose")
+        if vitals.get("weight") is not None:
+            patient["weight"] = vitals.get("weight")
+        if vitals.get("height") is not None:
+            patient["height"] = vitals.get("height")
+        if vitals.get("bmi") is not None:
+            patient["bmi"] = vitals.get("bmi")
+        if latest_visit and latest_visit.get("flagged_for_follow_up") is not None:
+            patient["flagged_for_follow_up"] = latest_visit.get("flagged_for_follow_up")
         patient.pop("_id", None)
     
     return {

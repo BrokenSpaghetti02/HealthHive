@@ -32,6 +32,7 @@ class RiskLevel(str, Enum):
 class ControlStatus(str, Enum):
     CONTROLLED = "Controlled"
     UNCONTROLLED = "Uncontrolled"
+    UNASSIGNED = "Unassigned"
 
 
 class VisitType(str, Enum):
@@ -96,6 +97,11 @@ class Patient(BaseModel):
     # Clinical
     conditions: List[str] = Field(default_factory=list, description="HTN, DM, or both")
     risk_level: Optional[RiskLevel] = None
+    current_medications: List[Dict[str, Any]] = Field(default_factory=list)
+    previous_medications: Optional[str] = None
+    medications_provided: Optional[bool] = None
+    medications_taken_regularly: Optional[bool] = None
+    flagged_for_follow_up: Optional[bool] = None
     
     # Consent & Privacy
     consent_records: List[ConsentRecord] = Field(default_factory=list)
@@ -140,6 +146,8 @@ class VitalsReading(BaseModel):
     diastolic: Optional[int] = Field(None, ge=40, le=150, description="BP diastolic in mmHg")
     glucose: Optional[float] = Field(None, ge=0, le=600, description="Blood glucose in mg/dL")
     glucose_type: Optional[str] = Field(None, description="Random or Fasting")
+    glucose_random: Optional[float] = Field(None, ge=0, le=600, description="Random blood glucose in mg/dL")
+    glucose_fasting: Optional[float] = Field(None, ge=0, le=600, description="Fasting blood glucose in mg/dL")
     weight: Optional[float] = Field(None, ge=0, le=300, description="Weight in kg")
     height: Optional[float] = Field(None, ge=0, le=250, description="Height in cm")
     bmi: Optional[float] = Field(None, ge=0, le=100, description="Body Mass Index")
@@ -175,9 +183,16 @@ class Visit(BaseModel):
     diagnosis: Optional[DiagnosisType] = None
     risk_tier: Optional[RiskLevel] = None
     control_status: Optional[ControlStatus] = None
+    flagged_for_follow_up: Optional[bool] = None
     
     # Medications
+    current_medications: List[MedicationDispensed] = Field(default_factory=list)
     medications_dispensed: List[MedicationDispensed] = Field(default_factory=list)
+    medications_provided: Optional[bool] = None
+    medications_taken_regularly: Optional[bool] = None
+    previous_medications: Optional[str] = None
+    new_medication_prescribed: Optional[str] = None
+    treatment: Optional[str] = None
     
     # Follow-up
     next_visit_date: Optional[datetime] = None

@@ -25,13 +25,16 @@ def calculate_risk_level(vitals: dict, diagnosis: str) -> str:
     systolic = vitals.get("systolic")
     diastolic = vitals.get("diastolic")
     glucose = vitals.get("glucose")
+    glucose_random = _get_random_glucose(vitals)
+    glucose_fasting = _get_fasting_glucose(vitals)
+    glucose_value = glucose if glucose is not None else (glucose_random if glucose_random is not None else glucose_fasting)
     
     # High risk criteria
     if systolic and systolic >= 180:
         return RiskLevel.VERY_HIGH.value
     if diastolic and diastolic >= 110:
         return RiskLevel.VERY_HIGH.value
-    if glucose and glucose >= 300:
+    if glucose_value and glucose_value >= 300:
         return RiskLevel.VERY_HIGH.value
     
     # High risk
@@ -39,7 +42,7 @@ def calculate_risk_level(vitals: dict, diagnosis: str) -> str:
         return RiskLevel.HIGH.value
     if diastolic and diastolic >= 100:
         return RiskLevel.HIGH.value
-    if glucose and glucose >= 250:
+    if glucose_value and glucose_value >= 250:
         return RiskLevel.HIGH.value
     
     # Elevated
@@ -47,16 +50,51 @@ def calculate_risk_level(vitals: dict, diagnosis: str) -> str:
         return RiskLevel.ELEVATED.value
     if diastolic and diastolic >= 90:
         return RiskLevel.ELEVATED.value
-    if glucose and glucose >= 200:
+    if glucose_value and glucose_value >= 200:
         return RiskLevel.ELEVATED.value
     
     return RiskLevel.NORMAL.value
 
-def calculate_control_status(vitals: dict, diagnosis: Optional[str]) -> str:
+def _get_random_glucose(vitals: dict) -> Optional[float]:
+    if vitals.get("glucose_random") is not None:
+        return vitals.get("glucose_random")
+    if vitals.get("glucose") is not None and (vitals.get("glucose_type") or "").lower() == "random":
+        return vitals.get("glucose")
+    return None
+
+
+def _get_fasting_glucose(vitals: dict) -> Optional[float]:
+    if vitals.get("glucose_fasting") is not None:
+        return vitals.get("glucose_fasting")
+    if vitals.get("glucose") is not None and (vitals.get("glucose_type") or "").lower() == "fasting":
+        return vitals.get("glucose")
+    return None
+
+
+def calculate_control_status(
+    vitals: dict,
+    diagnosis: Optional[str],
+    medications_provided: Optional[bool],
+    medications_taken_regularly: Optional[bool],
+    has_current_medications: bool
+) -> str:
     """Determine if patient's condition is controlled"""
+    if medications_provided is not None or medications_taken_regularly is not None:
+        if medications_provided is True and medications_taken_regularly is True:
+            return ControlStatus.CONTROLLED.value
+        if has_current_medications and medications_provided is False:
+            return ControlStatus.UNCONTROLLED.value
+        if medications_provided is False and medications_taken_regularly is False:
+            return ControlStatus.UNASSIGNED.value
+        if medications_taken_regularly is False:
+            return ControlStatus.UNCONTROLLED.value
+        return ControlStatus.UNASSIGNED.value
+
     systolic = vitals.get("systolic")
     diastolic = vitals.get("diastolic")
     glucose = vitals.get("glucose")
+    glucose_random = _get_random_glucose(vitals)
+    glucose_fasting = _get_fasting_glucose(vitals)
 
     diagnosis_value = diagnosis or ""
 
@@ -69,8 +107,31 @@ def calculate_control_status(vitals: dict, diagnosis: Optional[str]) -> str:
     if "DM" in diagnosis_value:
         if glucose and glucose >= 200:
             return ControlStatus.UNCONTROLLED.value
+        if glucose_random and glucose_random >= 200:
+            return ControlStatus.UNCONTROLLED.value
+        if glucose_fasting and glucose_fasting >= 126:
+            return ControlStatus.UNCONTROLLED.value
     
     return ControlStatus.CONTROLLED.value
+
+
+def calculate_follow_up_flag(vitals: dict) -> bool:
+    systolic = vitals.get("systolic")
+    diastolic = vitals.get("diastolic")
+    bmi = vitals.get("bmi")
+    glucose_random = _get_random_glucose(vitals)
+    glucose_fasting = _get_fasting_glucose(vitals)
+
+    if systolic is not None and diastolic is not None:
+        if systolic >= 140 and diastolic >= 90:
+            return True
+    if glucose_random is not None and glucose_random >= 200:
+        return True
+    if glucose_fasting is not None and glucose_fasting >= 126:
+        return True
+    if bmi is not None and bmi >= 30:
+        return True
+    return False
 
 def calculate_next_visit_date(control_status: str, risk_level: str) -> datetime:
     """Calculate recommended next visit date based on control and risk"""
@@ -174,8 +235,20 @@ async def record_visit(
     # Auto-calculate risk level
     risk_tier = calculate_risk_level(vitals, diagnosis)
     
+    medications_provided = visit_data.get("medications_provided")
+    medications_taken_regularly = visit_data.get("medications_taken_regularly")
+    has_current_medications = bool(visit_data.get("current_medications") or patient.get("current_medications"))
+
     # Auto-calculate control status
-    control_status = calculate_control_status(vitals, diagnosis)
+    control_status = calculate_control_status(
+        vitals,
+        diagnosis,
+        medications_provided,
+        medications_taken_regularly,
+        has_current_medications
+    )
+
+    flagged_for_follow_up = calculate_follow_up_flag(vitals)
     
     # Calculate next visit date if not provided
     next_visit_date = visit_data.get("next_visit_date")
@@ -196,7 +269,14 @@ async def record_visit(
         "diagnosis": diagnosis,
         "risk_tier": risk_tier,
         "control_status": control_status,
+        "flagged_for_follow_up": flagged_for_follow_up,
+        "current_medications": visit_data.get("current_medications", []),
         "medications_dispensed": visit_data.get("medications_dispensed", []),
+        "medications_provided": medications_provided,
+        "medications_taken_regularly": medications_taken_regularly,
+        "previous_medications": visit_data.get("previous_medications"),
+        "new_medication_prescribed": visit_data.get("new_medication_prescribed"),
+        "treatment": visit_data.get("treatment"),
         "next_visit_date": next_visit_date,
         "next_visit_reason": next_visit_reason,
         "complications_noted": visit_data.get("complications_noted"),
@@ -218,6 +298,11 @@ async def record_visit(
         {
             "$set": {
                 "risk_level": risk_tier,
+                "flagged_for_follow_up": flagged_for_follow_up,
+                "current_medications": visit_data.get("current_medications", patient.get("current_medications", [])),
+                "previous_medications": visit_data.get("previous_medications", patient.get("previous_medications")),
+                "medications_provided": medications_provided if medications_provided is not None else patient.get("medications_provided"),
+                "medications_taken_regularly": medications_taken_regularly if medications_taken_regularly is not None else patient.get("medications_taken_regularly"),
                 "updated_at": now,
                 "updated_by": current_user["user_id"]
             }
@@ -439,8 +524,21 @@ async def bulk_sync_visits(
             if not visit_data.get("risk_tier"):
                 visit_data["risk_tier"] = calculate_risk_level(vitals, diagnosis)
 
+            if vitals.get("weight") and vitals.get("height") and not vitals.get("bmi"):
+                vitals["bmi"] = round(vitals["weight"] / ((vitals["height"] / 100) ** 2), 1)
+
+            has_current_medications = bool(visit_data.get("current_medications") or patient.get("current_medications"))
             if not visit_data.get("control_status"):
-                visit_data["control_status"] = calculate_control_status(vitals, diagnosis)
+                visit_data["control_status"] = calculate_control_status(
+                    vitals,
+                    diagnosis,
+                    visit_data.get("medications_provided"),
+                    visit_data.get("medications_taken_regularly"),
+                    has_current_medications
+                )
+
+            if visit_data.get("flagged_for_follow_up") is None:
+                visit_data["flagged_for_follow_up"] = calculate_follow_up_flag(vitals)
 
             if not visit_data.get("next_visit_date"):
                 visit_data["next_visit_date"] = calculate_next_visit_date(
@@ -467,7 +565,15 @@ async def bulk_sync_visits(
             # Update patient risk level
             await db.patients.update_one(
                 {"patient_id": patient_id},
-                {"$set": {"risk_level": visit_data.get("risk_tier"), "updated_at": datetime.utcnow()}}
+                {"$set": {
+                    "risk_level": visit_data.get("risk_tier"),
+                    "flagged_for_follow_up": visit_data.get("flagged_for_follow_up"),
+                    "current_medications": visit_data.get("current_medications", patient.get("current_medications", [])),
+                    "previous_medications": visit_data.get("previous_medications", patient.get("previous_medications")),
+                    "medications_provided": visit_data.get("medications_provided", patient.get("medications_provided")),
+                    "medications_taken_regularly": visit_data.get("medications_taken_regularly", patient.get("medications_taken_regularly")),
+                    "updated_at": datetime.utcnow()
+                }}
             )
             
         except Exception as e:

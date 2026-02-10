@@ -66,7 +66,12 @@ class ClinicalValidator:
         return errors
     
     @staticmethod
-    def validate_glucose(glucose: Optional[float], glucose_type: Optional[str]) -> List[ValidationError]:
+    def validate_glucose(
+        glucose: Optional[float],
+        glucose_type: Optional[str],
+        glucose_random: Optional[float] = None,
+        glucose_fasting: Optional[float] = None
+    ) -> List[ValidationError]:
         """
         Validate blood glucose readings
         Random glucose: 0-600 mg/dL (flag if >400)
@@ -74,7 +79,7 @@ class ClinicalValidator:
         Diabetes threshold: ≥200 mg/dL random or ≥126 mg/dL fasting
         """
         errors = []
-        
+
         if glucose is not None:
             if glucose < 0 or glucose > 600:
                 errors.append(ValidationError(
@@ -94,7 +99,7 @@ class ClinicalValidator:
                     f"Glucose {glucose} mg/dL indicates hypoglycemia. Verify and monitor patient.",
                     "warning"
                 ))
-            
+
             # Type-specific validation
             if glucose_type:
                 if glucose_type.lower() == "fasting":
@@ -117,7 +122,35 @@ class ClinicalValidator:
                             f"Random glucose {glucose} mg/dL meets diabetes criteria (≥200 mg/dL).",
                             "info"
                         ))
-        
+
+        if glucose_random is not None:
+            if glucose_random < 0 or glucose_random > 600:
+                errors.append(ValidationError(
+                    "glucose_random",
+                    f"Random glucose {glucose_random} mg/dL is outside valid range (0-600). Please verify.",
+                    "error"
+                ))
+            elif glucose_random >= 200:
+                errors.append(ValidationError(
+                    "glucose_random",
+                    f"Random glucose {glucose_random} mg/dL meets diabetes criteria (≥200 mg/dL).",
+                    "info"
+                ))
+
+        if glucose_fasting is not None:
+            if glucose_fasting < 0 or glucose_fasting > 600:
+                errors.append(ValidationError(
+                    "glucose_fasting",
+                    f"Fasting glucose {glucose_fasting} mg/dL is outside valid range (0-600). Please verify.",
+                    "error"
+                ))
+            elif glucose_fasting >= 126:
+                errors.append(ValidationError(
+                    "glucose_fasting",
+                    f"Fasting glucose {glucose_fasting} mg/dL meets diabetes criteria (≥126 mg/dL).",
+                    "info"
+                ))
+
         return errors
     
     @staticmethod
@@ -235,7 +268,9 @@ class ClinicalValidator:
         # Validate glucose
         glucose_errors = ClinicalValidator.validate_glucose(
             vitals.get("glucose"),
-            vitals.get("glucose_type")
+            vitals.get("glucose_type"),
+            vitals.get("glucose_random"),
+            vitals.get("glucose_fasting")
         )
         all_errors.extend(glucose_errors)
         
