@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+import re
 from contextlib import asynccontextmanager
 import time
 
@@ -43,14 +44,15 @@ app = FastAPI(
 )
 
 # CORS middleware
+LOCALHOST_ORIGIN_REGEX = re.compile(r"https?://(localhost|127\.0\.0\.1)(:\d+)?")
+
 cors_kwargs = {
     "allow_credentials": True,
     "allow_methods": ["*"],
     "allow_headers": ["*"],
     "allow_origins": settings.CORS_ORIGINS,
+    "allow_origin_regex": LOCALHOST_ORIGIN_REGEX.pattern,
 }
-if settings.DEBUG:
-    cors_kwargs["allow_origin_regex"] = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 
 app.add_middleware(CORSMiddleware, **cors_kwargs)
 
@@ -60,7 +62,7 @@ class DevOptionsMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             origin = request.headers.get("origin")
             response = Response(status_code=200)
-            if origin:
+            if origin and (origin in settings.CORS_ORIGINS or LOCALHOST_ORIGIN_REGEX.match(origin)):
                 response.headers["Access-Control-Allow-Origin"] = origin
                 response.headers["Vary"] = "Origin"
             response.headers["Access-Control-Allow-Methods"] = request.headers.get(
@@ -76,8 +78,7 @@ class DevOptionsMiddleware(BaseHTTPMiddleware):
 
         return await call_next(request)
 
-if settings.DEBUG:
-    app.add_middleware(DevOptionsMiddleware)
+app.add_middleware(DevOptionsMiddleware)
 
 # Request timing middleware
 @app.middleware("http")
