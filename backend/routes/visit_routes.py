@@ -3,8 +3,8 @@ Visit management endpoints
 Record visits, retrieve visit history, sync offline data
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
+from typing import List, Optional, Any
 from datetime import datetime, timedelta
 from database import get_database
 from auth import get_current_user, RoleChecker, check_barangay_access
@@ -440,7 +440,7 @@ async def get_visit(
 
 @router.post("/bulk-sync")
 async def bulk_sync_visits(
-    visits_data: object,
+    visits_data: Any = Body(...),
     current_user: dict = Depends(get_current_user),
     db = Depends(get_database)
 ):
