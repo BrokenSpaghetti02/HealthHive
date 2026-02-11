@@ -43,8 +43,13 @@ async def login(credentials: LoginRequest, db = Depends(get_database)):
     - Returns access and refresh tokens
     - Updates last_login timestamp
     """
-    # Find user by username
-    user = await db.users.find_one({"username": credentials.username})
+    # Find user by username or user_id
+    user = await db.users.find_one({
+        "$or": [
+            {"username": credentials.username},
+            {"user_id": credentials.username}
+        ]
+    })
 
     # Ensure default admin exists for MVP
     if not user and credentials.username == "admin":
