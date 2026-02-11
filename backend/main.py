@@ -6,6 +6,8 @@ Offline-first chronic disease management for Jagna, Philippines
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from contextlib import asynccontextmanager
 import time
 
@@ -41,13 +43,41 @@ app = FastAPI(
 )
 
 # CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_kwargs = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+    "allow_origins": settings.CORS_ORIGINS,
+}
+if settings.DEBUG:
+    cors_kwargs["allow_origin_regex"] = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
+
+# Work around invalid/missing preflight headers in dev
+class DevOptionsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            origin = request.headers.get("origin")
+            response = Response(status_code=200)
+            if origin:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Methods"] = request.headers.get(
+                "access-control-request-method",
+                "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            )
+            response.headers["Access-Control-Allow-Headers"] = request.headers.get(
+                "access-control-request-headers",
+                "*"
+            )
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            return response
+
+        return await call_next(request)
+
+if settings.DEBUG:
+    app.add_middleware(DevOptionsMiddleware)
 
 # Request timing middleware
 @app.middleware("http")
